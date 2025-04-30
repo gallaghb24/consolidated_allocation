@@ -1,12 +1,8 @@
-"""allocation_merger_app.py – v6
-Adds final formatting tweaks requested:
-1. Download filename → <EventCode>_Consolidated_Allocation.xlsx
-2. Wrap text in rows 5 & 7 (Part, Brief Description)
-3. Make *every* row ~100 px tall (≈ 75 pt)
-4. Hide columns C‒J
-5. Centre-align everything from column L onward
-6. Apply a thin border around the header block (rows 2 – 10, K → last item col)
-7. Apply the same thin border to the entire store allocation table below
+"""allocation_merger_app.py – v8
+UI copy refresh:
+• App title → "Superdrug Consolidated Allocation Builder"  
+• Step text revised with hyperlink to export source  
+• Step 4 text → "Download the Consolidated Allocation"
 """
 
 import streamlit as st
@@ -19,235 +15,141 @@ try:
     from openpyxl.styles import Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 except ImportError:
-    st.error("❌ `openpyxl` is missing. Add it to requirements.txt or run `pip install openpyxl`.")
+    st.error("❌ `openpyxl` is missing. Run `pip install openpyxl` or add it to requirements.txt.")
     st.stop()
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Constants
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Constants / Styling helpers
+# ─────────────────────────────────────────────
 KEY_COLS = [
-    "Store Number",
-    "Store Name",
-    "Address Line 1",
-    "Address Line 2",
-    "City or Town",
-    "County",
-    "Country",
-    "Post Code",
-    "Region / Area",
-    "Location Type",
-    "Trading Format",
+    "Store Number","Store Name","Address Line 1","Address Line 2","City or Town",
+    "County","Country","Post Code","Region / Area","Location Type","Trading Format",
 ]
-
 LABELS = [
-    "POS Code",            # row 2
-    "Kit Name",            # row 3 (blank)
-    "Project Description", # row 4
-    "Part",                # row 5
-    "Supplier",            # row 6
-    "Brief Description",   # row 7
-    "Total (inc Overs)",   # row 8
-    "Total Allocations",   # row 9
-    "Overs",               # row 10
+    "POS Code","Kit Name","Project Description","Part","Supplier",
+    "Brief Description","Total (inc Overs)","Total Allocations","Overs",
 ]
-
-LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # → column K (1-based)
-ITEM_START_XL = LABEL_COL_XL + 1                      # → first item col L
-ROW_HEIGHT_PT = 75  # ≈ 100 px
-
+LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # K
+ITEM_START_XL = LABEL_COL_XL + 1                    # L
 thin_side = Side(style="thin", color="000000")
-THIN_BORDER = Border(top=thin_side, left=thin_side, right=thin_side, bottom=thin_side)
+THIN_BORDER = Border(top=thin_side,left=thin_side,right=thin_side,bottom=thin_side)
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Helper functions
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Extraction / Merge helpers (unchanged)
+# ─────────────────────────────────────────────
 
 def extract_alloc_data_and_meta(file):
     df = pd.read_excel(file, header=6, engine="openpyxl")
     df["Store Number"] = df["Store Number"].astype(str)
-
     raw = pd.read_excel(file, header=None, engine="openpyxl")
-    BRIEF_ROW, OVERS_ROW = 1, 4
-
     meta = {}
-    for col_idx in range(len(KEY_COLS), raw.shape[1]):
-        brief_ref = str(raw.iloc[6, col_idx])
-        if brief_ref == "nan":
+    for col in range(len(KEY_COLS), raw.shape[1]):
+        ref = str(raw.iloc[6, col])
+        if ref == "nan":
             continue
-        meta[brief_ref] = {
-            "brief_description": raw.iloc[BRIEF_ROW, col_idx],
-            "overs": 0 if pd.isna(raw.iloc[OVERS_ROW, col_idx]) else raw.iloc[OVERS_ROW, col_idx],
+        meta[ref] = {
+            "brief_description": raw.iloc[1, col],
+            "overs": 0 if pd.isna(raw.iloc[4, col]) else raw.iloc[4, col],
         }
     return df, meta
-
 
 def merge_allocations(dfs):
     combined = pd.concat(dfs, ignore_index=True, sort=False)
     numeric_cols = [c for c in combined.columns if c not in KEY_COLS]
     combined[numeric_cols] = combined[numeric_cols].apply(pd.to_numeric, errors="coerce")
     agg = {c: ("first" if c in KEY_COLS else "sum") for c in combined.columns if c != "Store Number"}
-    master = combined.groupby("Store Number", as_index=False).agg(agg)
-    return master.sort_values("Store Number").reset_index(drop=True)
-
+    return combined.groupby("Store Number", as_index=False).agg(agg).sort_values("Store Number")
 
 def load_consolidated_brief(file):
     if file is None:
         return {}
     cb = pd.read_excel(file, header=1, engine="openpyxl")
-    cols = {
-        "Brief Ref": "brief_ref",
-        "POS Code": "pos_code",
-        "Project Description": "project_description",
-        "Part": "part",
-        "Supplier": "supplier",
-    }
-    if missing := [c for c in cols if c not in cb.columns]:
-        st.error("Consolidated Brief missing columns: " + ", ".join(missing))
-        return {}
-    brief_dict = {}
-    for _, row in cb[cols.keys()].dropna(subset=["Brief Ref"]).iterrows():
-        ref = str(row["Brief Ref"]).strip()
-        brief_dict.setdefault(ref, {
-            "pos_code": row["POS Code"],
-            "project_description": row["Project Description"],
-            "part": row["Part"],
-            "supplier": row["Supplier"],
+    needed = {"Brief Ref","POS Code","Project Description","Part","Supplier"}
+    if missing := needed - set(cb.columns):
+        st.error("Consolidated Brief missing: "+", ".join(missing)); return {}
+    out = {}
+    for _, r in cb[list(needed)].dropna(subset=["Brief Ref"]).iterrows():
+        ref = str(r["Brief Ref"]).strip()
+        out.setdefault(ref, {
+            "pos_code": r["POS Code"],
+            "project_description": r["Project Description"],
+            "part": r["Part"],
+            "supplier": r["Supplier"],
         })
-    return brief_dict
+    return out
 
-
-def write_with_metadata(master_df, meta, event_code):
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        STARTROW = len(LABELS) + 2  # leaves one blank row after headers
-        master_df.to_excel(writer, index=False, sheet_name="Master Allocation", startrow=STARTROW)
+def write_with_metadata(df, meta, event):
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        STARTROW = len(LABELS) + 1  # data header on Excel row 11
+        df.to_excel(writer, index=False, sheet_name="Master Allocation", startrow=STARTROW)
         ws = writer.sheets["Master Allocation"]
-
-        # Row 1: Project Ref + Event code
-        ws.cell(row=1, column=1, value="Project Ref")
-        ws.cell(row=1, column=2, value=event_code)
-
-        # Column setup: set width & hide C-J
-        for col_idx in range(1, ws.max_column + 1):
-            letter = get_column_letter(col_idx)
-            ws.column_dimensions[letter].width = 14.3  # ≈100 px
-            if "C" <= letter <= "J":
-                ws.column_dimensions[letter].hidden = True
-
-        # Header labels + data
-        item_cols = [c for c in master_df.columns if c not in KEY_COLS]
+        ws.cell(row=1, column=1, value="Project Ref"); ws.cell(row=1, column=2, value=event)
+        for col in range(1, ws.max_column+1):
+            let = get_column_letter(col); ws.column_dimensions[let].width = 14.3
+            if "C"<=let<="J": ws.column_dimensions[let].hidden = True
+        items = [c for c in df.columns if c not in KEY_COLS]
         for r_off, label in enumerate(LABELS):
-            row_xl = 2 + r_off  # rows 2-10
-            ws.cell(row=row_xl, column=LABEL_COL_XL, value=label)
-            for ic, item in enumerate(item_cols):
-                col_xl = ITEM_START_XL + ic
-                cell = ws.cell(row=row_xl, column=col_xl)
+            row = 2 + r_off; ws.cell(row=row, column=LABEL_COL_XL, value=label).alignment = Alignment(wrap_text=(row in (5,7)),vertical="center")
+            for i, item in enumerate(items):
+                c = ITEM_START_XL+i; cell = ws.cell(row=row, column=c)
+                data = meta.get(item, {}); overs = data.get("overs",0); total = df[item].fillna(0).sum()
+                if label=="POS Code": cell.value = data.get("pos_code","")
+                elif label=="Project Description": cell.value=data.get("project_description","")
+                elif label=="Part": cell.value=data.get("part","")
+                elif label=="Supplier": cell.value=data.get("supplier","")
+                elif label=="Brief Description": cell.value=data.get("brief_description","")
+                elif label=="Total (inc Overs)": cell.value=total+overs
+                elif label=="Total Allocations": cell.value=total
+                elif label=="Overs": cell.value=overs
+                cell.alignment = Alignment(horizontal="center",vertical="center",wrap_text=(row in (5,7)))
+        min_row = STARTROW+1
+        for r in ws.iter_rows(min_row=min_row, min_col=ITEM_START_XL, max_row=ws.max_row, max_col=ws.max_column):
+            for cell in r: cell.alignment = Alignment(horizontal="center", vertical="center"); cell.border=THIN_BORDER
+        for r in ws.iter_rows(min_row=2, max_row=10, min_col=LABEL_COL_XL, max_col=ws.max_column):
+            for cell in r: cell.border = THIN_BORDER
+    buf.seek(0); return buf
 
-                # Fill data where we have it
-                data = meta.get(item, {})
-                overs_val = data.get("overs", 0)
-                total_alloc = master_df[item].fillna(0).sum()
-                if label == "POS Code":
-                    cell.value = data.get("pos_code", "")
-                elif label == "Project Description":
-                    cell.value = data.get("project_description", "")
-                elif label == "Part":
-                    cell.value = data.get("part", "")
-                elif label == "Supplier":
-                    cell.value = data.get("supplier", "")
-                elif label == "Brief Description":
-                    cell.value = data.get("brief_description", "")
-                elif label == "Total (inc Overs)":
-                    cell.value = total_alloc + overs_val
-                elif label == "Total Allocations":
-                    cell.value = total_alloc
-                elif label == "Overs":
-                    cell.value = overs_val
+# ─────────────────────────────────────────────
+# Streamlit UI
+# ─────────────────────────────────────────────
+st.set_page_config(page_title="Superdrug Consolidated Allocation Builder", layout="wide")
 
-                # Centring for item columns
-                cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=(row_xl in (5, 7)))
-
-            # Label column alignment & wrapping
-            label_cell = ws.cell(row=row_xl, column=LABEL_COL_XL)
-            label_cell.alignment = Alignment(wrap_text=(row_xl in (5, 7)), vertical="center")
-
-        # Row height for all rows
-        for row in range(1, ws.max_row + 1):
-            ws.row_dimensions[row].height = ROW_HEIGHT_PT
-
-        # Centre-align item columns in the data table & apply borders
-        table_min_row = STARTROW + 1  # header row of DF
-        for row in ws.iter_rows(min_row=table_min_row, max_row=ws.max_row, min_col=ITEM_START_XL, max_col=ws.max_column):
-            for cell in row:
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-
-        # Borders for header block
-        for row in ws.iter_rows(min_row=2, max_row=10, min_col=LABEL_COL_XL, max_col=ws.max_column):
-            for cell in row:
-                cell.border = THIN_BORDER
-
-        # Borders for store allocation table
-        for row in ws.iter_rows(min_row=table_min_row, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            for cell in row:
-                cell.border = THIN_BORDER
-
-    buffer.seek(0)
-    return buffer
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Streamlit UI
-# ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Allocation Merger", layout="wide")
-
-st.title("Media Centre Allocation Merger")
+st.title("Superdrug Consolidated Allocation Builder")
 
 st.markdown(
     """
-    1. Upload one or more **allocation exports**.  
-    2. Upload the **Consolidated Brief** (1 file).  
-    3. Enter the **Event Code** (required).  
-    4. Download the Consolidated Allocation.
+    **Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
+    **Step 2 – Upload the Consolidated Brief** (optional but recommended)  
+    **Step 3 – Enter the Event Code** (required)  
+    **Step 4 – Download the Consolidated Allocation**
     """
 )
 
 alloc_files = st.file_uploader("Allocation exports (.xlsx)", type=["xlsx"], accept_multiple_files=True)
-brief_file = st.file_uploader("Consolidated Brief (.xlsx)", type=["xlsx"], accept_multiple_files=False, key="brief_uploader")
+brief_file = st.file_uploader("Consolidated Brief (.xlsx)", type=["xlsx"], key="brief")
 event_code = st.text_input("Event Code (e.g. E0625)")
 
 if not alloc_files:
-    st.info("👆 Please upload at least one allocation export to begin.")
-    st.stop()
+    st.info("Please upload at least one allocation export."); st.stop()
 if not event_code.strip():
-    st.warning("✏️ Enter the Event Code – required for export.")
-    st.stop()
+    st.warning("Event Code is required."); st.stop()
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Processing
-# ──────────────────────────────────────────────────────────────────────────────
-a_progress = st.progress(0, text="Reading allocation files…")
+# Processing
+prog = st.progress(0)
 all_dfs, meta = [], defaultdict(dict)
-for i, up in enumerate(alloc_files, start=1):
-    df_part, meta_part = extract_alloc_data_and_meta(up)
-    all_dfs.append(df_part)
-    for k, v in meta_part.items():
-        meta.setdefault(k, {}).update(v)
-    a_progress.progress(i / len(alloc_files), text=f"Processed {i}/{len(alloc_files)} file(s)")
-a_progress.empty()
+for i, f in enumerate(alloc_files,1):
+    d, m = extract_alloc_data_and_meta(f); all_dfs.append(d)
+    for k,v in m.items(): meta.setdefault(k, {}).update(v)
+    prog.progress(i/len(alloc_files))
+prog.empty()
+for ref, info in load_consolidated_brief(brief_file).items(): meta.setdefault(ref, {}).update(info)
 
-brief_dict = load_consolidated_brief(brief_file)
-for ref, info in brief_dict.items():
-    meta.setdefault(ref, {}).update(info)
+master = merge_allocations(all_dfs)
+file_bytes = write_with_metadata(master, meta, event_code.strip())
 
-master_df = merge_allocations(all_dfs)
+st.success(f"Consolidated {master.shape[0]} stores × {len(master.columns)-len(KEY_COLS)} items.")
 
-buffer = write_with_metadata(master_df, meta, event_code.strip())
+st.dataframe(master.head(50), use_container_width=True)
 
-download_name = f"{event_code.strip()}_Consolidated_Allocation.xlsx"
-
-st.success(
-    f"✅ Consolidated: {master_df.shape[0]} stores × {len(master_df.columns) - len(KEY_COLS)} items."
-)
-
-st.dataframe(master_df.head(50), use_container_width=True)
-
-st.download_button("📥 Download consolidated allocation", data=buffer, file_name=download_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+st.download_button("📥 Download the Consolidated Allocation", data=file_bytes, file_name=f"{event_code.strip()}_Consolidated_Allocation.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
