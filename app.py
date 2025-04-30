@@ -21,7 +21,7 @@ LABELS = [
     "POS Code", "Kit Name", "Project Description", "Part", "Supplier",
     "Brief Description", "Total (inc Overs)", "Total Allocations", "Overs",
 ]
-LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1   # column K (1‑based)
+LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1   # column K (1-based)
 ITEM_START_XL = LABEL_COL_XL + 1                       # first item col → L
 
 # styles
@@ -81,6 +81,7 @@ def load_brief(file):
 # ──────────────────────── EXCEL WRITER ────────────────────────
 
 def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
+    """Return an in‑memory xlsx with full formatting."""
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         STARTROW = len(LABELS) + 1  # data header on Excel row 11
@@ -131,21 +132,23 @@ def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
                     cell.value = overs
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=(row in (5, 7)))
                 cell.border = THIN_BORDER
+
         # style pandas header row (Excel row 11)
-        header_row = STARTROW + 1
+        excel_header_row = STARTROW + 1  # 0‑based to 1‑based
         for col in range(1, ws.max_column + 1):
-            c = ws.cell(row=header_row, column=col)
+            c = ws.cell(row=excel_header_row, column=col)
             c.fill = ORANGE_FILL
             c.font = BOLD_FONT
             c.border = THIN_BORDER
 
-        # data rows borders and alignment
-        data_start = header_row + 1
+        # data rows borders & alignment
+        data_start = excel_header_row + 1
         for row in ws.iter_rows(min_row=data_start, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             for cell in row:
                 if cell.column >= ITEM_START_XL:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
                 cell.border = THIN_BORDER
+
     buf.seek(0)
     return buf
 
@@ -154,12 +157,14 @@ st.set_page_config(page_title="Superdrug Consolidated Allocation Builder", layou
 
 st.title("Superdrug Consolidated Allocation Builder")
 
-st.markdown("""
+st.markdown(
+    """
 **Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
 **Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
 **Step 3 – Enter the Event Code (required)**  
 **Step 4 – Download the Consolidated Allocation**
-""")
+    """
+)
 
 alloc_files = st.file_uploader("Allocation exports (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 brief_file = st.file_uploader("Consolidated Brief (.xlsx)", type=["xlsx"], key="brief")
@@ -173,18 +178,23 @@ if not event_code.strip():
     st.stop()
 
 # combine allocations
-prog = st.progress(0)
+progress = st.progress(0)
 all_dfs, meta = [], defaultdict(dict)
 for i, f in enumerate(alloc_files, 1):
     df_part, meta_part = extract_alloc(f)
     all_dfs.append(df_part)
     for k, v in meta_part.items():
         meta.setdefault(k, {}).update(v)
-    prog.progress(i / len(alloc_files))
-prog.empty()
+    progress.progress(i / len(alloc_files))
+progress.empty()
 
+# enrich from consolidated brief
 for ref, info in load_brief(brief_file).items():
     meta.setdefault(ref, {}).update(info)
 
 master_df = merge_allocations(all_dfs)
-workbook_bytes = build_workbook(master
+
+workbook_bytes = build_workbook(master_df, meta, event_code.strip())
+
+st.success(
+    f"Consolidated {master_df.shape[0]} stores × {len(master_df.columns) - len(KEY_COLS)} items."
