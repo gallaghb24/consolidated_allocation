@@ -206,7 +206,7 @@ st.markdown(
     1. Upload one or more **allocation exports**.  
     2. Upload the **Consolidated Brief** (1 file).  
     3. Enter the **Event Code** (required).  
-    4. Download the formatted workbook.
+    4. Download the Consolidated Allocation.
     """
 )
 
