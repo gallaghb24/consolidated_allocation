@@ -109,6 +109,7 @@ def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
             label_cell.alignment = Alignment(wrap_text=(row_num in (5, 7)), vertical="center")
             label_cell.fill = ORANGE_FILL
             label_cell.font = BOLD_FONT
+            label_cell.border = THIN_BORDER
             for i, item in enumerate(item_cols):
                 cell = ws.cell(row=row_num, column=ITEM_START_XL + i)
                 data = meta.get(item, {})
