@@ -168,6 +168,11 @@ st.markdown(
     """
     **Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
     **Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
+    **Step 3 – Enter the Event Code (required)**  
+    **Step 4 – Download the Consolidated Allocation**
+    """
+)  
+    **Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
 
     **Step 3 – Enter the Event Code** (required)  
     **Step 4 – Download the Consolidated Allocation**
