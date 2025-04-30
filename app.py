@@ -26,13 +26,13 @@ LABELS = [
     "POS Code", "Kit Name", "Project Description", "Part", "Supplier",
     "Brief Description", "Total (inc Overs)", "Total Allocations", "Overs",
 ]
-LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # column K (1‑based)
+LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # column K (1-based)
 ITEM_START_XL = LABEL_COL_XL + 1                     # column L
 
 # ───────────────────────────── Data helpers ─────────────────────────────
 
 def extract_alloc(file):
-    """Read a single allocation export and return (df, meta)."""
+    """Read one allocation export; return dataframe + metadata dict."""
     df = pd.read_excel(file, header=6, engine="openpyxl")
     df["Store Number"] = pd.to_numeric(df["Store Number"], errors="coerce").astype("Int64")
 
@@ -60,7 +60,7 @@ def merge_allocations(dfs):
 
 
 def load_brief(file):
-    """Read consolidated brief → dict keyed by Brief Ref."""
+    """Return dict keyed by Brief Ref with pos_code/project_description/part/supplier."""
     if file is None:
         return {}
     brief = pd.read_excel(file, header=1, engine="openpyxl")
@@ -85,11 +85,11 @@ def load_brief(file):
 def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        STARTROW = len(LABELS) + 1  # data header goes on Excel row 11
+        STARTROW = len(LABELS) + 1  # data header row is Excel row 11
         df.to_excel(writer, index=False, sheet_name="Master Allocation", startrow=STARTROW)
         ws = writer.sheets["Master Allocation"]
 
-        # Row 1 – Project Ref & Event Code
+        # Row 1 – Project Ref + Event Code
         ws.cell(row=1, column=1, value="Project Ref").font = BOLD_FONT
         ws.cell(row=1, column=2, value=event_code).font = BOLD_FONT
 
@@ -102,7 +102,7 @@ def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
 
         item_cols = [c for c in df.columns if c not in KEY_COLS]
 
-        # Rows 2–10 labels + values
+        # Header rows 2–10
         for r_off, label in enumerate(LABELS):
             row_num = 2 + r_off
             label_cell = ws.cell(row=row_num, column=LABEL_COL_XL, value=label)
@@ -133,17 +133,17 @@ def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=(row_num in (5, 7)))
                 cell.border = THIN_BORDER
 
-        # Style pandas-generated header (Excel row 11)
-        header_excel_row = STARTROW + 1
+        # Style pandas header row (Excel row 11)
+        header_row_excel = STARTROW + 1
         for col_idx in range(1, ws.max_column + 1):
-            c = ws.cell(row=header_excel_row, column=col_idx)
-            c.fill = ORANGE_FILL
-            c.font = BOLD_FONT
-            c.border = THIN_BORDER
+            hdr = ws.cell(row=header_row_excel, column=col_idx)
+            hdr.fill = ORANGE_FILL
+            hdr.font = BOLD_FONT
+            hdr.border = THIN_BORDER
 
-        # Data rows borders & alignment
-        data_start_row = header_excel_row + 1
-        for row in ws.iter_rows(min_row=data_start_row, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        # Data rows border & alignment
+        data_start = header_row_excel + 1
+        for row in ws.iter_rows(min_row=data_start, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
             for cell in row:
                 if cell.column >= ITEM_START_XL:
                     cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -159,10 +159,10 @@ st.set_page_config(page_title="Superdrug Consolidated Allocation Builder", layou
 st.title("Superdrug Consolidated Allocation Builder")
 
 st.markdown(
-    """**Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
-**Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
-**Step 3 – Enter the Event Code (required)**  
-**Step 4 – Download the Consolidated Allocation**"""
+    """**Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
+**Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
+**Step 3 – Enter the Event Code (required)**  
+**Step 4 – Download the Consolidated Allocation**"""
 )
 
 alloc_files = st.file_uploader("Allocation exports (.xlsx)", type=["xlsx"], accept_multiple_files=True)
@@ -176,21 +176,32 @@ if not event_code.strip():
     st.warning("Event Code is required.")
     st.stop()
 
-# ───────────────────────────── Merge process ─────────────────────────────
+# ───────────────────────────── Processing ─────────────────────────────
 progress = st.progress(0)
 all_dfs, meta = [], defaultdict(dict)
 for idx, upload in enumerate(alloc_files, start=1):
-    part_df, part_meta = extract_alloc(upload)
-    all_dfs.append(part_df)
-    for key, val in part_meta.items():
-        meta.setdefault(key, {}).update(val)
+    df_part, meta_part = extract_alloc(upload)
+    all_dfs.append(df_part)
+    for k, v in meta_part.items():
+        meta.setdefault(k, {}).update(v)
     progress.progress(idx / len(alloc_files))
 progress.empty()
 
-# Enrich metadata from brief
 for ref, info in load_brief(brief_file).items():
     meta.setdefault(ref, {}).update(info)
 
 master_df = merge_allocations(all_dfs)
 
-workbook = build_workbook(master
+workbook_bytes = build_workbook(master_df, meta, event_code.strip())
+
+st.success(
+    f"Consolidated {master_df.shape[0]} stores × {len(master_df.columns) - len(KEY_COLS)} items.")
+
+st.dataframe(master_df.head(50), use_container_width=True)
+
+st.download_button(
+    label="📥 Download the Consolidated Allocation",
+    data=workbook_bytes,
+    file_name=f"{event_code.strip()}_Consolidated_Allocation.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
