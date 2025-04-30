@@ -1,7 +1,6 @@
-"""allocation_merger_app.py – v2
-A Streamlit tool that merges Media Centre allocation exports **and** keeps the
-metadata rows (Brief Description, Total (inc Overs), Total Allocations, Overs)
-above each item column.
+"""allocation_merger_app.py – v3
+Keeps full store‑detail columns for every store, even when that store first
+appears in a *later* file.
 """
 
 import streamlit as st
@@ -13,17 +12,13 @@ from collections import defaultdict
 #  Dependencies check
 # ──────────────────────────────────────────────────────────────────────────────
 try:
-    import openpyxl  # noqa: F401 – so pandas can use the engine
-    from openpyxl.utils import get_column_letter
+    import openpyxl  # noqa: F401
 except ImportError:
-    st.error(
-        "❌ `openpyxl` is missing. Add it to *requirements.txt* or run "
-        "`pip install openpyxl` and restart the app."
-    )
+    st.error("❌ `openpyxl` is missing. Add it to *requirements.txt* or run `pip install openpyxl`.")
     st.stop()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Constants
+#  Constants & helpers
 # ──────────────────────────────────────────────────────────────────────────────
 KEY_COLS = [
     "Store Number",
@@ -44,90 +39,77 @@ LABELS = [
     "Total Allocations",
     "Overs",
 ]
+LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # 1‑based Excel column where labels go (K)
+ITEM_START_XL = LABEL_COL_XL + 1                      # first item column (L)
 
-# Column in which the row labels (above item columns) live – same as "Trading Format"
-LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # 1‑based for openpyxl
-ITEM_START_XL = LABEL_COL_XL + 1  # first item column (e.g. L)
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  Helper functions
-# ──────────────────────────────────────────────────────────────────────────────
 
 def extract_data_and_meta(file):
     """Return (df, meta_dict) for a single allocation export."""
-
-    # 1️⃣  Store‑level allocations (row 7 is the header)
     df = pd.read_excel(file, header=6, engine="openpyxl")
     df["Store Number"] = df["Store Number"].astype(str)
 
-    # 2️⃣  Metadata rows (read raw)
     raw = pd.read_excel(file, header=None, engine="openpyxl")
-
-    # Row indices (0‑based) relative to Excel file layout
-    BRIEF_ROW = 1
-    OVERS_ROW = 4
+    BRIEF_ROW, OVERS_ROW = 1, 4
 
     meta: dict[str, dict[str, object]] = {}
     for col_idx in range(len(KEY_COLS), raw.shape[1]):
-        item_code = str(raw.iloc[6, col_idx])  # row 7 (index 6) contains codes
-        if item_code == "nan":  # skip empty tail columns
+        item_code = str(raw.iloc[6, col_idx])  # codes live in row 7 (= index 6)
+        if item_code == "nan":
             continue
-        description = raw.iloc[BRIEF_ROW, col_idx]
-        overs_val = raw.iloc[OVERS_ROW, col_idx]
-        overs_val = 0 if pd.isna(overs_val) else overs_val
-
         meta[item_code] = {
-            "description": description,
-            "overs": overs_val,
+            "description": raw.iloc[BRIEF_ROW, col_idx],
+            "overs": 0 if pd.isna(raw.iloc[OVERS_ROW, col_idx]) else raw.iloc[OVERS_ROW, col_idx],
         }
-
     return df, meta
 
 
 def merge_allocations(dfs):
-    """Outer‑join all dfs on *Store Number* and keep every item column."""
-    master: pd.DataFrame | None = None
-    for df in dfs:
-        item_cols = [c for c in df.columns if c not in KEY_COLS]
-        if master is None:
-            master = df.copy()
-        else:
-            temp = df[["Store Number"] + item_cols]
-            master = master.merge(temp, on="Store Number", how="outer")
+    """Outer‑merge *all* rows then aggregate by Store Number.
 
+    * For key/string columns ⇒ first non‑null value.
+    * For numeric item columns ⇒ sum (they're never duplicated across files, so
+      sum equals the non‑null value; if you do have duplicates the numbers add).
+    """
+    combined = pd.concat(dfs, ignore_index=True, sort=False)
+
+    # Coerce all non‑key columns to numeric where possible (item columns)
+    non_key_cols = [c for c in combined.columns if c not in KEY_COLS]
+    combined[non_key_cols] = combined[non_key_cols].apply(pd.to_numeric, errors="coerce")
+
+    agg_funcs: dict[str, str] = {}
+    for col in combined.columns:
+        if col == "Store Number":
+            continue
+        agg_funcs[col] = "first" if col in KEY_COLS else "sum"
+
+    master = combined.groupby("Store Number", as_index=False).agg(agg_funcs)
     master = master.sort_values("Store Number").reset_index(drop=True)
     return master
 
 
 def write_with_metadata(master_df: pd.DataFrame, meta: dict[str, dict[str, object]]) -> BytesIO:
-    """Return an in‑memory Excel file containing metadata rows + data."""
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        # Write store allocations starting on row 7 (Excel) so we have 6 rows for metadata
-        STARTROW = 6  # 0‑based for pandas → row 7 in Excel
+        STARTROW = 6  # leave rows 1‑6 free for metadata
         master_df.to_excel(writer, index=False, sheet_name="Master Allocation", startrow=STARTROW)
-
         ws = writer.sheets["Master Allocation"]
+
         item_cols = [c for c in master_df.columns if c not in KEY_COLS]
-
-        for row_offset, label in enumerate(LABELS):
-            row_xl = 2 + row_offset  # Excel rows 2‑5
+        for r_off, label in enumerate(LABELS):
+            row_xl = 2 + r_off  # rows 2‑5
             ws.cell(row=row_xl, column=LABEL_COL_XL, value=label)
-
             for ic, item in enumerate(item_cols):
-                col_xl = ITEM_START_XL + ic  # 1‑based Excel col number
-                if row_offset == 0:  # Brief Description
+                col_xl = ITEM_START_XL + ic
+                overs_val = meta.get(item, {}).get("overs", 0)
+                total_alloc = master_df[item].fillna(0).sum()
+                if r_off == 0:  # Brief Description
                     ws.cell(row=row_xl, column=col_xl, value=meta.get(item, {}).get("description", ""))
-                elif row_offset == 3:  # Overs
-                    ws.cell(row=row_xl, column=col_xl, value=meta.get(item, {}).get("overs", 0))
-                elif row_offset == 2:  # Total Allocations
-                    total_alloc = master_df[item].fillna(0).sum()
-                    ws.cell(row=row_xl, column=col_xl, value=total_alloc)
-                elif row_offset == 1:  # Total (inc Overs)
-                    overs_val = meta.get(item, {}).get("overs", 0)
-                    total_alloc = master_df[item].fillna(0).sum()
+                elif r_off == 1:  # Total (inc Overs)
                     ws.cell(row=row_xl, column=col_xl, value=total_alloc + overs_val)
-
+                elif r_off == 2:  # Total Allocations
+                    ws.cell(row=row_xl, column=col_xl, value=total_alloc)
+                elif r_off == 3:  # Overs
+                    ws.cell(row=row_xl, column=col_xl, value=overs_val)
     buffer.seek(0)
     return buffer
 
@@ -140,57 +122,44 @@ st.title("Media Centre Allocation Merger")
 
 st.markdown(
     """
-    **How it works**  
-    1. Drop in one or more Media Centre allocation exports (`.xlsx`).  
-    2. The app outer‑joins on **Store Number** so any new stores are kept.  
-    3. All item columns are preserved.  
-    4. The rows above each item column – *Brief Description*, *Overs*, etc. – are
-       reproduced in the final file.  
-    5. *Total Allocations* is re‑calculated to guarantee it matches the table,
-       and *Total (inc Overs)* = Total Allocations + Overs.
+    Upload one or more allocation exports → get a single consolidated workbook
+    **with full store details**.
     """
 )
 
 uploaded_files = st.file_uploader(
-    "Upload allocation Excel files",
+    "Upload exports (.xlsx)",
     type=["xlsx"],
     accept_multiple_files=True,
 )
 
 if not uploaded_files:
-    st.info("👆 Upload the exports to begin.")
+    st.info("👆 Drag your files here to begin.")
     st.stop()
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Load & merge
-# ──────────────────────────────────────────────────────────────────────────────
 progress = st.progress(0, text="Reading files…")
-all_dfs, all_meta_dicts = [], defaultdict(dict)
-for i, file in enumerate(uploaded_files, start=1):
-    df_part, meta_part = extract_data_and_meta(file)
+all_dfs, meta_dict = [], defaultdict(dict)
+for i, up in enumerate(uploaded_files, start=1):
+    df_part, meta_part = extract_data_and_meta(up)
     all_dfs.append(df_part)
     for k, v in meta_part.items():
-        # in case of duplicates across files, first one wins → can be changed to validation/merge if needed
-        all_meta_dicts.setdefault(k, v)
-    progress.progress(i / len(uploaded_files), text=f"Processed {i}/{len(uploaded_files)} file(s)…")
+        meta_dict.setdefault(k, v)  # keep first description/overs seen
+    progress.progress(i / len(uploaded_files), text=f"Processed {i}/{len(uploaded_files)} file(s)")
 progress.empty()
 
 master_df = merge_allocations(all_dfs)
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  Build Excel & offer download
-# ──────────────────────────────────────────────────────────────────────────────
-buffer = write_with_metadata(master_df, all_meta_dicts)
+buffer = write_with_metadata(master_df, meta_dict)
 
 st.success(
-    f"Combined **{len(uploaded_files)}** file{'s' if len(uploaded_files) > 1 else ''}.  "
-    f"Master allocation: **{master_df.shape[0]}** stores × **{len(master_df.columns) - len(KEY_COLS)}** items."
+    f"✅ Merged {len(uploaded_files)} file{'s' if len(uploaded_files) > 1 else ''}: "
+    f"{master_df.shape[0]} stores × {len(master_df.columns) - len(KEY_COLS)} items."
 )
 
 st.dataframe(master_df.head(50), use_container_width=True)
 
 st.download_button(
-    "📥 Download master_allocation.xlsx",
+    "📥 Download master_allocation.xlsx",
     data=buffer,
     file_name="master_allocation.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
