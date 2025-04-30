@@ -1,6 +1,6 @@
-"""allocation_merger_app.py – v3
-Keeps full store‑detail columns for every store, even when that store first
-appears in a *later* file.
+"""allocation_merger_app.py – v4
+Adds the extra header rows (POS Code, Kit Name, Project Description, Part,
+Supplier) above each item column and leaves their values blank for now.
 """
 
 import streamlit as st
@@ -9,7 +9,7 @@ from io import BytesIO
 from collections import defaultdict
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Dependencies check
+#  Dependency check
 # ──────────────────────────────────────────────────────────────────────────────
 try:
     import openpyxl  # noqa: F401
@@ -18,7 +18,7 @@ except ImportError:
     st.stop()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  Constants & helpers
+#  Constants
 # ──────────────────────────────────────────────────────────────────────────────
 KEY_COLS = [
     "Store Number",
@@ -33,27 +33,38 @@ KEY_COLS = [
     "Location Type",
     "Trading Format",
 ]
-LABELS = [
-    "Brief Description",
-    "Total (inc Overs)",
-    "Total Allocations",
-    "Overs",
-]
-LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # 1‑based Excel column where labels go (K)
-ITEM_START_XL = LABEL_COL_XL + 1                      # first item column (L)
 
+# Header rows we want above each item column (row numbers start at 2 in Excel)
+LABELS = [
+    "POS Code",            # row 2
+    "Kit Name",            # row 3
+    "Project Description", # row 4
+    "Part",                # row 5
+    "Supplier",            # row 6
+    "Brief Description",   # row 7
+    "Total (inc Overs)",   # row 8
+    "Total Allocations",   # row 9
+    "Overs",               # row 10
+]
+
+LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # K column (1‑based)
+ITEM_START_XL = LABEL_COL_XL + 1                      # first item column L
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Helper functions
+# ──────────────────────────────────────────────────────────────────────────────
 
 def extract_data_and_meta(file):
-    """Return (df, meta_dict) for a single allocation export."""
+    """Return (df, meta_dict) extracted from a single allocation export."""
     df = pd.read_excel(file, header=6, engine="openpyxl")
     df["Store Number"] = df["Store Number"].astype(str)
 
     raw = pd.read_excel(file, header=None, engine="openpyxl")
-    BRIEF_ROW, OVERS_ROW = 1, 4
+    BRIEF_ROW, OVERS_ROW = 1, 4  # relative to Excel (2nd & 5th rows visually)
 
     meta: dict[str, dict[str, object]] = {}
     for col_idx in range(len(KEY_COLS), raw.shape[1]):
-        item_code = str(raw.iloc[6, col_idx])  # codes live in row 7 (= index 6)
+        item_code = str(raw.iloc[6, col_idx])  # codes live in row 7 (index 6)
         if item_code == "nan":
             continue
         meta[item_code] = {
@@ -64,52 +75,46 @@ def extract_data_and_meta(file):
 
 
 def merge_allocations(dfs):
-    """Outer‑merge *all* rows then aggregate by Store Number.
-
-    * For key/string columns ⇒ first non‑null value.
-    * For numeric item columns ⇒ sum (they're never duplicated across files, so
-      sum equals the non‑null value; if you do have duplicates the numbers add).
-    """
+    """Merge all allocation data keeping first non-null store details."""
     combined = pd.concat(dfs, ignore_index=True, sort=False)
-
-    # Coerce all non‑key columns to numeric where possible (item columns)
     non_key_cols = [c for c in combined.columns if c not in KEY_COLS]
     combined[non_key_cols] = combined[non_key_cols].apply(pd.to_numeric, errors="coerce")
 
-    agg_funcs: dict[str, str] = {}
-    for col in combined.columns:
-        if col == "Store Number":
-            continue
-        agg_funcs[col] = "first" if col in KEY_COLS else "sum"
-
-    master = combined.groupby("Store Number", as_index=False).agg(agg_funcs)
+    agg = {c: ("first" if c in KEY_COLS else "sum") for c in combined.columns if c != "Store Number"}
+    master = combined.groupby("Store Number", as_index=False).agg(agg)
     master = master.sort_values("Store Number").reset_index(drop=True)
     return master
 
 
 def write_with_metadata(master_df: pd.DataFrame, meta: dict[str, dict[str, object]]) -> BytesIO:
+    """Create an in‑memory Excel workbook with all header rows populated."""
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        STARTROW = 6  # leave rows 1‑6 free for metadata
+        STARTROW = len(LABELS) + 2  # leave LABELS rows + one blank row
         master_df.to_excel(writer, index=False, sheet_name="Master Allocation", startrow=STARTROW)
-        ws = writer.sheets["Master Allocation"]
 
+        ws = writer.sheets["Master Allocation"]
         item_cols = [c for c in master_df.columns if c not in KEY_COLS]
+
         for r_off, label in enumerate(LABELS):
-            row_xl = 2 + r_off  # rows 2‑5
+            row_xl = 2 + r_off  # rows 2 – 10
             ws.cell(row=row_xl, column=LABEL_COL_XL, value=label)
             for ic, item in enumerate(item_cols):
                 col_xl = ITEM_START_XL + ic
                 overs_val = meta.get(item, {}).get("overs", 0)
                 total_alloc = master_df[item].fillna(0).sum()
-                if r_off == 0:  # Brief Description
+
+                # Populate only the rows we have data for; leave new header rows blank
+                if label == "Brief Description":
                     ws.cell(row=row_xl, column=col_xl, value=meta.get(item, {}).get("description", ""))
-                elif r_off == 1:  # Total (inc Overs)
+                elif label == "Total (inc Overs)":
                     ws.cell(row=row_xl, column=col_xl, value=total_alloc + overs_val)
-                elif r_off == 2:  # Total Allocations
+                elif label == "Total Allocations":
                     ws.cell(row=row_xl, column=col_xl, value=total_alloc)
-                elif r_off == 3:  # Overs
+                elif label == "Overs":
                     ws.cell(row=row_xl, column=col_xl, value=overs_val)
+                # POS Code, Kit Name, Project Description, Part, Supplier → left blank
+
     buffer.seek(0)
     return buffer
 
@@ -122,8 +127,9 @@ st.title("Media Centre Allocation Merger")
 
 st.markdown(
     """
-    Upload one or more allocation exports → get a single consolidated workbook
-    **with full store details**.
+    Upload your allocation exports — the app builds a consolidated workbook and
+    now includes extra header rows (*POS Code*, *Kit Name*, *Project
+    Description*, *Part*, *Supplier*) ready for data.
     """
 )
 
@@ -143,7 +149,7 @@ for i, up in enumerate(uploaded_files, start=1):
     df_part, meta_part = extract_data_and_meta(up)
     all_dfs.append(df_part)
     for k, v in meta_part.items():
-        meta_dict.setdefault(k, v)  # keep first description/overs seen
+        meta_dict.setdefault(k, v)
     progress.progress(i / len(uploaded_files), text=f"Processed {i}/{len(uploaded_files)} file(s)")
 progress.empty()
 
