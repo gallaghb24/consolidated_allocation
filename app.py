@@ -189,5 +189,15 @@ master_df = merge_allocations(all_dfs)
 
 workbook_bytes = build_workbook(master_df, meta, event_code.strip())
 
-# Success message
-lines_count = master_df.shape
+# Success message and download
+lines_count = master_df.shape[1] - len(KEY_COLS)
+st.success(f"Consolidated {lines_count} lines × {master_df.shape[0]} stores.")
+
+st.dataframe(master_df.head(50), use_container_width=True)
+
+st.download_button(
+    label="📥 Download the Consolidated Allocation",
+    data=workbook_bytes,
+    file_name=f"{event_code.strip()}_Consolidated_Allocation.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
