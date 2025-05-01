@@ -196,7 +196,8 @@ master_df = merge_allocations(all_dfs)
 workbook_bytes = build_workbook(master_df, meta, event_code.strip())
 
 st.success(
-    f"Consolidated {master_df.shape[0]} stores × {len(master_df.columns) - len(KEY_COLS)} items.")
+    f"Consolidated {len(master_df.columns) - len(KEY_COLS)} lines × {master_df.shape[0]} stores."
+) - len(KEY_COLS)} items.")
 
 st.dataframe(master_df.head(50), use_container_width=True)
 
