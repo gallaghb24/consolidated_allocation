@@ -3,13 +3,13 @@ import pandas as pd
 from io import BytesIO
 from collections import defaultdict
 
-# ───────────────────────────── Excel styling helpers ─────────────────────────────
+# Excel styling helpers
 try:
     import openpyxl
     from openpyxl.styles import Alignment, Border, Side, PatternFill, Font
     from openpyxl.utils import get_column_letter
 except ImportError:
-    st.error("❌ `openpyxl` is not installed. Please run `pip install openpyxl`.")
+    st.error("❌ `openpyxl` is not installed. Please run `pip install openpyxl`." )
     st.stop()
 
 THIN_SIDE = Side(style="thin", color="000000")
@@ -17,7 +17,7 @@ THIN_BORDER = Border(top=THIN_SIDE, left=THIN_SIDE, right=THIN_SIDE, bottom=THIN
 ORANGE_FILL = PatternFill(start_color="F4B084", end_color="F4B084", fill_type="solid")
 BOLD_FONT = Font(bold=True)
 
-# ───────────────────────────── Column definitions ─────────────────────────────
+# Column definitions
 KEY_COLS = [
     "Store Number", "Store Name", "Address Line 1", "Address Line 2", "City or Town",
     "County", "Country", "Post Code", "Region / Area", "Location Type", "Trading Format",
@@ -26,13 +26,13 @@ LABELS = [
     "POS Code", "Kit Name", "Project Description", "Part", "Supplier",
     "Brief Description", "Total (inc Overs)", "Total Allocations", "Overs",
 ]
-LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # column K (1-based)
-ITEM_START_XL = LABEL_COL_XL + 1                     # column L
+LABEL_COL_XL = KEY_COLS.index("Trading Format") + 1  # K column (1‑based)
+ITEM_START_XL = LABEL_COL_XL + 1                      # L column (1‑based)
 
-# ───────────────────────────── Data helpers ─────────────────────────────
+# ─────────── Data helpers ───────────
 
 def extract_alloc(file):
-    """Read one allocation export; return dataframe + metadata dict."""
+    """Read one allocation export → (DataFrame, meta dict)."""
     df = pd.read_excel(file, header=6, engine="openpyxl")
     df["Store Number"] = pd.to_numeric(df["Store Number"], errors="coerce").astype("Int64")
 
@@ -60,13 +60,11 @@ def merge_allocations(dfs):
 
 
 def load_brief(file):
-    """Return dict keyed by Brief Ref with pos_code/project_description/part/supplier."""
     if file is None:
         return {}
     brief = pd.read_excel(file, header=1, engine="openpyxl")
     required = {"Brief Ref", "POS Code", "Project Description", "Part", "Supplier"}
-    missing = required - set(brief.columns)
-    if missing:
+    if missing := required - set(brief.columns):
         st.error("Consolidated Brief missing columns: " + ", ".join(missing))
         return {}
     out = {}
@@ -80,38 +78,37 @@ def load_brief(file):
         })
     return out
 
-# ───────────────────────────── Workbook builder ─────────────────────────────
+# ─────────── Workbook builder ───────────
 
 def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
-    buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        STARTROW = len(LABELS) + 1  # data header row is Excel row 11
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        STARTROW = len(LABELS) + 1  # pandas header → Excel row 11
         df.to_excel(writer, index=False, sheet_name="Master Allocation", startrow=STARTROW)
         ws = writer.sheets["Master Allocation"]
 
-        # Row 1 – Project Ref + Event Code
+        # Row 1 – Project Ref & Event Code
         ws.cell(row=1, column=1, value="Project Ref").font = BOLD_FONT
         ws.cell(row=1, column=2, value=event_code).font = BOLD_FONT
 
         # Column widths & hide C–J
         for col_idx in range(1, ws.max_column + 1):
-            letter = get_column_letter(col_idx)
-            ws.column_dimensions[letter].width = 18
-            if "C" <= letter <= "J":
-                ws.column_dimensions[letter].hidden = True
+            col_letter = get_column_letter(col_idx)
+            ws.column_dimensions[col_letter].width = 18
+            if "C" <= col_letter <= "J":
+                ws.column_dimensions[col_letter].hidden = True
 
+        # Header rows (2‑10)
         item_cols = [c for c in df.columns if c not in KEY_COLS]
-
-        # Header rows 2–10
         for r_off, label in enumerate(LABELS):
             row_num = 2 + r_off
-            label_cell = ws.cell(row=row_num, column=LABEL_COL_XL, value=label)
-            label_cell.alignment = Alignment(wrap_text=(row_num in (5, 7)), vertical="center")
-            label_cell.fill = ORANGE_FILL
-            label_cell.font = BOLD_FONT
-            label_cell.border = THIN_BORDER
-            for i, item in enumerate(item_cols):
-                cell = ws.cell(row=row_num, column=ITEM_START_XL + i)
+            lh = ws.cell(row=row_num, column=LABEL_COL_XL, value=label)
+            lh.alignment = Alignment(wrap_text=(row_num in (5, 7)), vertical="center")
+            lh.fill = ORANGE_FILL
+            lh.font = BOLD_FONT
+            lh.border = THIN_BORDER
+            for idx, item in enumerate(item_cols):
+                cell = ws.cell(row=row_num, column=ITEM_START_XL + idx)
                 data = meta.get(item, {})
                 overs = data.get("overs", 0)
                 total = df[item].fillna(0).sum()
@@ -134,37 +131,34 @@ def build_workbook(df: pd.DataFrame, meta: dict, event_code: str) -> BytesIO:
                 cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=(row_num in (5, 7)))
                 cell.border = THIN_BORDER
 
-        # Style pandas header row (Excel row 11)
-        header_row_excel = STARTROW + 1
+        # Style pandas header (Excel row 11)
+        header_excel_row = STARTROW + 1
         for col_idx in range(1, ws.max_column + 1):
-            hdr = ws.cell(row=header_row_excel, column=col_idx)
-            hdr.fill = ORANGE_FILL
-            hdr.font = BOLD_FONT
-            hdr.border = THIN_BORDER
+            hcell = ws.cell(row=header_excel_row, column=col_idx)
+            hcell.fill = ORANGE_FILL
+            hcell.font = BOLD_FONT
+            hcell.border = THIN_BORDER
 
-        # Data rows border & alignment
-        data_start = header_row_excel + 1
-        for row in ws.iter_rows(min_row=data_start, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
-            for cell in row:
-                if cell.column >= ITEM_START_XL:
-                    cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border = THIN_BORDER
+        # Data rows
+        for row in ws.iter_rows(min_row=header_excel_row + 1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+            for c in row:
+                if c.column >= ITEM_START_XL:
+                    c.alignment = Alignment(horizontal="center", vertical="center")
+                c.border = THIN_BORDER
 
-    buf.seek(0)
-    return buf
+    buffer.seek(0)
+    return buffer
 
-# ───────────────────────────── Streamlit UI ─────────────────────────────
+# ─────────── Streamlit UI ───────────
 
 st.set_page_config(page_title="Superdrug Consolidated Allocation Builder", layout="wide")
 
 st.title("Superdrug Consolidated Allocation Builder")
 
-st.markdown(
-    """**Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
-**Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
-**Step 3 – Enter the Event Code (required)**  
-**Step 4 – Download the Consolidated Allocation**"""
-)
+st.markdown("""**Step 1 – Upload all allocation exports together** – [download them here](https://superdrug.aswmediacentre.com/ArtworkPrint/ArtworkPrintReport/ArtworkPrintReport?reportId=1149)  
+**Step 2 – Upload the Consolidated Brief complete with Supplier for each line (optional)**  
+**Step 3 – Enter the Event Code (required)**  
+**Step 4 – Download the Consolidated Allocation**""")
 
 alloc_files = st.file_uploader("Allocation exports (.xlsx)", type=["xlsx"], accept_multiple_files=True)
 brief_file = st.file_uploader("Consolidated Brief (.xlsx)", type=["xlsx"], key="brief")
@@ -177,11 +171,11 @@ if not event_code.strip():
     st.warning("Event Code is required.")
     st.stop()
 
-# ───────────────────────────── Processing ─────────────────────────────
+# Merge process
 progress = st.progress(0)
 all_dfs, meta = [], defaultdict(dict)
-for idx, upload in enumerate(alloc_files, start=1):
-    df_part, meta_part = extract_alloc(upload)
+for idx, up in enumerate(alloc_files, start=1):
+    df_part, meta_part = extract_alloc(up)
     all_dfs.append(df_part)
     for k, v in meta_part.items():
         meta.setdefault(k, {}).update(v)
@@ -195,15 +189,5 @@ master_df = merge_allocations(all_dfs)
 
 workbook_bytes = build_workbook(master_df, meta, event_code.strip())
 
-lines_count = master_df.shape[1] - len(KEY_COLS)
-st.success(f"Consolidated {lines_count} lines × {master_df.shape[0]} stores.") - len(KEY_COLS)} lines × {master_df.shape[0]} stores."
-) - len(KEY_COLS)} items.")
-
-st.dataframe(master_df.head(50), use_container_width=True)
-
-st.download_button(
-    label="📥 Download the Consolidated Allocation",
-    data=workbook_bytes,
-    file_name=f"{event_code.strip()}_Consolidated_Allocation.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+# Success message
+lines_count = master_df.shape
