@@ -60,22 +60,36 @@ def merge_allocations(dfs):
 
 
 def load_brief(file):
+    """Load Consolidated Brief into a lookup dictionary.
+
+    The Supplier column is optional; when absent the remaining
+    details are still returned for each Brief Ref. Columns are
+    matched by name so order does not matter.
+    """
     if file is None:
         return {}
+
     brief = pd.read_excel(file, header=1, engine="openpyxl")
-    required = {"Brief Ref", "POS Code", "Project Description", "Part", "Supplier"}
-    if missing := required - set(brief.columns):
+
+    required = {"Brief Ref", "POS Code", "Project Description", "Part"}
+    missing = required - set(brief.columns)
+    if missing:
         st.error("Consolidated Brief missing columns: " + ", ".join(missing))
         return {}
+
+    has_supplier = "Supplier" in brief.columns
     out = {}
-    for _, row in brief[list(required)].dropna(subset=["Brief Ref"]).iterrows():
+    for _, row in brief.dropna(subset=["Brief Ref"]).iterrows():
         ref = str(row["Brief Ref"]).strip()
-        out.setdefault(ref, {
+        info = {
             "pos_code": row["POS Code"],
             "project_description": row["Project Description"],
             "part": row["Part"],
-            "supplier": row["Supplier"],
-        })
+        }
+        if has_supplier:
+            info["supplier"] = row["Supplier"]
+        out[ref] = info
+
     return out
 
 # ─────────── Workbook builder ───────────
